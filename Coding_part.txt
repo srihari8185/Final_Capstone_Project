@@ -1,0 +1,109 @@
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/fs.h>
+#include <linux/uaccess.h>
+#include <linux/slab.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+#include <linux/jiffies.h>
+#include <linux/sched/signal.h>
+#include <linux/device.h>
+#include <linux/mm.h> // For si_meminfo
+#include <linux/timer.h>
+
+#define DEVICE_NAME "sysmetrics"
+#define CLASS_NAME  "sysmetrics"
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("SRIHARI");
+MODULE_DESCRIPTION("A Linux device driver to report system metrics");
+MODULE_VERSION("0.1");
+
+static int major_number;
+static struct class*  sysmetrics_class  = NULL;
+static struct device* sysmetrics_device = NULL;
+
+static int dev_open(struct inode *inodep, struct file *filep) {
+    return 0;
+}
+
+static int dev_release(struct inode *inodep, struct file *filep) {
+    return 0;
+}
+
+static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *offset) {
+    int err_count = 0;
+    char *msg;
+    int msg_len;
+
+    struct sysinfo info;
+    si_meminfo(&info);
+
+    msg_len = snprintf(NULL, 0, "Uptime: %llu seconds\nTotal RAM: %lu MB\nFree RAM: %lu MB\n",
+                       (unsigned long long)(jiffies_to_msecs(get_jiffies_64()) / 1000),
+                       info.totalram >> 20,
+                       info.freeram >> 20) + 1;
+
+    msg = kmalloc(msg_len, GFP_KERNEL);
+    if (!msg) {
+        return -ENOMEM;
+    }
+
+    snprintf(msg, msg_len, "Uptime: %llu seconds\nTotal RAM: %lu MB\nFree RAM: %lu MB\n",
+             (unsigned long long)(jiffies_to_msecs(get_jiffies_64()) / 1000),
+             info.totalram >> 20,
+             info.freeram >> 20);
+
+    err_count = copy_to_user(buffer, msg, msg_len);
+    kfree(msg);
+
+    if (err_count == 0) {
+        return msg_len;
+    } else {
+        return -EFAULT;
+    }
+}
+
+static struct file_operations fops = {
+    .open = dev_open,
+    .read = dev_read,
+    .release = dev_release,
+};
+
+static int __init sysmetrics_init(void) {
+    major_number = register_chrdev(0, DEVICE_NAME, &fops);
+    if (major_number < 0) {
+        printk(KERN_ALERT "SysMetrics failed to register a major number\n");
+        return major_number;
+    }
+
+    sysmetrics_class = class_create(CLASS_NAME);
+    if (IS_ERR(sysmetrics_class)) {
+        unregister_chrdev(major_number, DEVICE_NAME);
+        printk(KERN_ALERT "Failed to register device class\n");
+        return PTR_ERR(sysmetrics_class);
+    }
+
+    sysmetrics_device = device_create(sysmetrics_class, NULL, MKDEV(major_number, 0), NULL, DEVICE_NAME);
+    if (IS_ERR(sysmetrics_device)) {
+        class_destroy(sysmetrics_class);
+        unregister_chrdev(major_number, DEVICE_NAME);
+        printk(KERN_ALERT "Failed to create the device\n");
+        return PTR_ERR(sysmetrics_device);
+    }
+
+    printk(KERN_INFO "SysMetrics: device class created correctly\n");
+    return 0;
+}
+
+static void __exit sysmetrics_exit(void) {
+    device_destroy(sysmetrics_class, MKDEV(major_number, 0));
+    class_unregister(sysmetrics_class);
+    class_destroy(sysmetrics_class);
+    unregister_chrdev(major_number, DEVICE_NAME);
+    printk(KERN_INFO "SysMetrics: Goodbye from the LKM!\n");
+}
+
+module_init(sysmetrics_init);
+module_exit(sysmetrics_exit);
